@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Make scripts executable
+        run: chmod +x build.sh
+
+      - name: Build native binaries
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+        run: ./build.sh
+
+      - name: Verify outputs
+        run: |
+          BIN_DIR="rom/vendor/bin/hw"
+          LIB_DIR="rom/system/lib64"
+          
+          FILES=(
+            "$BIN_DIR/android.hardware.biometrics.fingerprint-servicemahiroaidl"
+            "$BIN_DIR/android.hardware.biometrics.fingerprint-injectmahiroaidl"
+            "$LIB_DIR/libfodhook.so"
+          )
+
+          file "${FILES[@]}"
+
+          for f in "${FILES[@]}"; do
+            file "$f" | grep -q "ARM aarch64" || { echo "::error::$f is not aarch64"; exit 1; }
+          done
+
+      - name: Package ROM overlay
+        run: |
+          OVL="fod-native.zip"
+          mkdir -p overlay/system/bin overlay/system/lib64 overlay/system/etc/init
+          
+          install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-servicemahiroaidl overlay/system/bin/
+          install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-injectmahiroaidl overlay/system/bin/
+          install -m 0644 rom/system/lib64/libfodhook.so overlay/system/lib64/
+          install -m 0644 rom/system/etc/init/fodnative.rc overlay/system/etc/init/
+          
+          (cd overlay && zip -r9 "../$OVL" .)
+          echo "OVL_NAME=$OVL" >> "$GITHUB_ENV"
+          unzip -l "$OVL"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: COS17-FOD-BRIDGE
+          path: ${{ env.OVL_NAME }}
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.OVL_NAME }}

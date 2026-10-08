@@ -1,0 +1,5 @@
+module/bin/*
+!module/bin/.gitkeep
+module/system/lib64/*
+!module/system/lib64/.gitkeep
+*.zip
