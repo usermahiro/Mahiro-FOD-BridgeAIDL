@@ -5,11 +5,9 @@ service vendor.fodbridge /vendor/bin/hw/android.hardware.biometrics.fingerprint-
     user root
     group root system input
     seclabel u:r:shell:s0
-    oneshot false
 
 service vendor.fodinject /vendor/bin/hw/android.hardware.biometrics.fingerprint-injectmahiroaidl
     class late_start
     user root
     group root system
     seclabel u:r:shell:s0
-    oneshot false

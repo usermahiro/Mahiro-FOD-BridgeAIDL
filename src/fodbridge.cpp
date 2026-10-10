@@ -6,11 +6,15 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <thread>
 
 #define LOG_TAG "fodbridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -21,6 +25,50 @@ static const char* g_devOverride = nullptr;
 
 static const char* ACTION_DOWN = "com.rianixia.FINGER_DOWN";
 static const char* ACTION_UP   = "com.rianixia.FINGER_UP";
+
+static int g_sockFd = -1;
+
+static int connectSocket() {
+    if (g_sockFd >= 0) return g_sockFd;
+    int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s < 0) return -1;
+    sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    const char* nm = "fodhook";
+    a.sun_path[0] = '\0';
+    memcpy(a.sun_path + 1, nm, strlen(nm));
+    socklen_t len = offsetof(sockaddr_un, sun_path) + 1 + strlen(nm);
+    if (connect(s, (sockaddr*)&a, len) != 0) {
+        close(s);
+        return -1;
+    }
+    g_sockFd = s;
+    LOGI("connected to @fodhook socket");
+    return g_sockFd;
+}
+
+static void sendSocket(char b) {
+    int fd = connectSocket();
+    if (fd >= 0) {
+        if (write(fd, &b, 1) != 1) {
+            close(fd);
+            g_sockFd = -1;
+        }
+    }
+}
+
+static void writeHbm(int val) {
+    static int hbmFd = -2;
+    if (hbmFd == -2) {
+        hbmFd = open("/sys/kernel/tran_display/lcm_hbm_state", O_WRONLY | O_CLOEXEC);
+    }
+    if (hbmFd >= 0) {
+        char buf[8];
+        int len = snprintf(buf, sizeof(buf), "%d\n", val);
+        pwrite(hbmFd, buf, len, 0);
+    }
+}
 
 static int openTouch() {
     if (g_devOverride) return open(g_devOverride, O_RDONLY | O_CLOEXEC);
@@ -54,16 +102,19 @@ static std::string sh(const std::string& cmd) {
     return o;
 }
 
-// Fires the exact broadcast action FingerKeyReceiver.onReceive() switches on.
-static void sendFingerBroadcast(bool down) {
-    const char* action = down ? ACTION_DOWN : ACTION_UP;
-    sh(std::string("cmd activity broadcast --user 0 -a ") + action);
-    LOGI("broadcast %s", action);
+static void sendFingerBroadcastAsync(bool down) {
+    std::thread([down]() {
+        const char* action = down ? ACTION_DOWN : ACTION_UP;
+        sh(std::string("cmd activity broadcast --user 0 -a ") + action);
+    }).detach();
 }
 
 static void onEdge(int st) {
-    sendFingerBroadcast(st != 0);
-    LOGI("finger %s", st ? "DOWN" : "UP");
+    char c = st ? '1' : '0';
+    sendSocket(c);
+    writeHbm(st ? 1 : 0);
+    sendFingerBroadcastAsync(st != 0);
+    LOGI("finger %s (sent to socket & broadcast)", st ? "DOWN" : "UP");
 }
 
 int main(int argc, char** argv) {

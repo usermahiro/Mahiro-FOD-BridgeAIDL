@@ -21,6 +21,7 @@
 
 static const char* TARGET = "com.android.systemui";
 static const char* SOPATH = "/system/lib64/libfodhook.so";
+static const char* SOPATH_EXT = "/system_ext/lib64/libfodhook.so";
 
 struct regs64 { uint64_t regs[31]; uint64_t sp; uint64_t pc; uint64_t pstate; };
 
@@ -84,6 +85,12 @@ static bool writeMem(int pid, uintptr_t dst, const void* src, size_t len) {
     return process_vm_writev(pid, &liov, 1, &riov, 1, 0) == (ssize_t)len;
 }
 
+static bool readMem(int pid, uintptr_t src, void* dst, size_t len) {
+    struct iovec liov = { dst, len };
+    struct iovec riov = { (void*)src, len };
+    return process_vm_readv(pid, &liov, 1, &riov, 1, 0) == (ssize_t)len;
+}
+
 // remote-call a function: set x0..x2, pc=func, lr=0 (return-trap -> SIGSEGV), run.
 static uint64_t remoteCall(int pid, uintptr_t func, uint64_t a0, uint64_t a1, uint64_t a2, regs64 saved) {
     regs64 r = saved;
@@ -95,30 +102,53 @@ static uint64_t remoteCall(int pid, uintptr_t func, uint64_t a0, uint64_t a1, ui
     r.sp = (saved.sp - 0x800) & ~0xFUL; // scratch + 16-byte aligned
     if (!setRegs(pid, &r)) { LOGE("setregs(call) failed"); return 0; }
     ptrace(PTRACE_CONT, pid, 0, 0);
-    int st; waitpid(pid, &st, 0);
+    int st = 0;
+    while (true) {
+        if (waitpid(pid, &st, 0) <= 0) break;
+        if (WIFSTOPPED(st)) {
+            int sig = WSTOPSIG(st);
+            if (sig == SIGSEGV) break;
+            ptrace(PTRACE_CONT, pid, 0, (sig == SIGSTOP || sig == SIGTRAP) ? 0 : sig);
+        } else {
+            break;
+        }
+    }
     // expect stop by SIGSEGV (returned to 0). Read x0.
     regs64 out; getRegs(pid, &out);
     return out.regs[0];
 }
 
 static bool inject(int pid) {
+    const char* targetSo = SOPATH;
+    if (access(targetSo, R_OK) != 0 && access(SOPATH_EXT, R_OK) == 0) {
+        targetSo = SOPATH_EXT;
+    }
+
     regs64 saved;
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) != 0) { LOGE("attach failed"); return false; }
     int st; waitpid(pid, &st, 0);
     if (!getRegs(pid, &saved)) { LOGE("getregs failed"); ptrace(PTRACE_DETACH, pid, 0, 0); return false; }
 
     // Prefer __loader_dlopen(path, flags, caller_addr): lets us pass an explicit
-    // caller so the remote linker picks a namespace that permits /system/lib64,
-    // instead of caller=0 (which fails). __loader_dlopen lives in the linker.
+    // caller so the remote linker picks a namespace that permits /system/lib64.
+    // Caller MUST be in the default/system namespace (e.g. libandroid_runtime.so),
+    // NOT libc.so (which is in the isolated APEX runtime namespace).
     void* h = dlopen("libdl.so", RTLD_NOW);
     uintptr_t l_loader = h ? (uintptr_t)dlsym(h, "__loader_dlopen") : 0;
-    uintptr_t r_loader = 0, caller = 0;
+    uintptr_t l_dlerror = h ? (uintptr_t)dlsym(h, "dlerror") : 0;
+    uintptr_t r_loader = 0, caller = 0, r_dlerror = 0;
     if (l_loader) {
         uintptr_t l_lk = libBase(0, "linker64"), r_lk = libBase(pid, "linker64");
-        uintptr_t r_libc = libBase(pid, "/libc.so");
-        if (l_lk && r_lk && r_libc) {
+        uintptr_t r_sys = libBase(pid, "libandroid_runtime.so");
+        if (!r_sys) r_sys = libBase(pid, "libnativehelper.so");
+        if (!r_sys) r_sys = libBase(pid, "app_process");
+        if (!r_sys) r_sys = libBase(pid, "/system/lib64/");
+        if (!r_sys) r_sys = libBase(pid, "/libc.so");
+
+        if (l_lk && r_lk && r_sys) {
             r_loader = l_loader - l_lk + r_lk;
-            caller = r_libc;   // an address inside libc (system namespace) permits /system/lib64
+            caller = r_sys + 0x20; // address inside default/system namespace
+            if (l_dlerror) r_dlerror = l_dlerror - l_lk + r_lk;
         }
     }
     // Fallback: plain dlopen via libdl base-diff.
@@ -126,11 +156,14 @@ static bool inject(int pid) {
     uintptr_t l_base = libBase(0, "/libdl.so");
     uintptr_t r_base = libBase(pid, "/libdl.so");
     uintptr_t r_dlopen = (l_base && r_base) ? (l_dlopen - l_base + r_base) : 0;
-    LOGI("loader=%p caller=%p dlopen=%p", (void*)r_loader, (void*)caller, (void*)r_dlopen);
+    if (!r_dlerror && l_dlerror && l_base && r_base) {
+        r_dlerror = l_dlerror - l_base + r_base;
+    }
+    LOGI("loader=%p caller=%p dlopen=%p dlerror=%p", (void*)r_loader, (void*)caller, (void*)r_dlopen, (void*)r_dlerror);
 
     // write the .so path into remote scratch (below saved sp)
     uintptr_t strAddr = (saved.sp - 0x400) & ~0xFUL;
-    if (!writeMem(pid, strAddr, SOPATH, strlen(SOPATH) + 1)) { LOGE("writeMem path failed"); ptrace(PTRACE_DETACH, pid, 0, 0); return false; }
+    if (!writeMem(pid, strAddr, targetSo, strlen(targetSo) + 1)) { LOGE("writeMem path failed"); ptrace(PTRACE_DETACH, pid, 0, 0); return false; }
 
     uint64_t handle = 0;
     if (r_loader && caller) {
@@ -140,6 +173,16 @@ static bool inject(int pid) {
     if (!handle && r_dlopen) {
         handle = remoteCall(pid, r_dlopen, strAddr, 2, 0, saved);
         LOGI("remote dlopen returned %p", (void*)handle);
+    }
+
+    if (!handle && r_dlerror) {
+        uint64_t errPtr = remoteCall(pid, r_dlerror, 0, 0, 0, saved);
+        if (errPtr) {
+            char errBuf[512] = {0};
+            if (readMem(pid, errPtr, errBuf, sizeof(errBuf) - 1)) {
+                LOGE("remote dlerror: %s", errBuf);
+            }
+        }
     }
 
     // restore original state and let SystemUI continue

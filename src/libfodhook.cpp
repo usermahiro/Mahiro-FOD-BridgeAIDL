@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <errno.h>
+#include <functional>
 #include <android/log.h>
 
 #define LOG_TAG "fodhook"
@@ -124,6 +125,33 @@ static void* worker(void*) {
         if (clr(env)) return nullptr;
         return (jclass)c;
     };
+
+    // Fix screen blackout on Lockscreen: force isDisableAppDimLayer -> true
+    {
+        jclass cOpt = loadClass("com.oplusos.systemui.common.feature.KeyguardFeatureOption");
+        if (cOpt) {
+            jfieldID fDel = env->GetStaticFieldID(cOpt, "isDisableAppDimLayer$delegate", "Lkotlin/Lazy;");
+            if (fDel) {
+                jobject del = env->GetStaticObjectField(cOpt, fDel);
+                if (del) {
+                    jclass cLazy = env->GetObjectClass(del);
+                    jfieldID fVal = env->GetFieldID(cLazy, "_value", "Ljava/lang/Object;");
+                    jfieldID fInit = env->GetFieldID(cLazy, "initializer", "Lkotlin/jvm/functions/Function0;");
+                    jclass cBool = env->FindClass("java/lang/Boolean");
+                    if (cBool) {
+                        jfieldID fTrue = env->GetStaticFieldID(cBool, "TRUE", "Ljava/lang/Boolean;");
+                        if (fTrue) {
+                            jobject bTrue = env->GetStaticObjectField(cBool, fTrue);
+                            if (fVal && bTrue) env->SetObjectField(del, fVal, bTrue);
+                            if (fInit) env->SetObjectField(del, fInit, nullptr);
+                            LOGI("KeyguardFeatureOption.isDisableAppDimLayer forced to TRUE (Dim Layer DISABLED)");
+                        }
+                    }
+                }
+            }
+            clr(env);
+        }
+    }
 
     jobject gMech = nullptr; jmethodID mTouch = nullptr;
     for (int tries = 0; tries < 600 && !gMech; ++tries) {
