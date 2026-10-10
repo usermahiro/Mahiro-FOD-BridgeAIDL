@@ -51,8 +51,11 @@ jobs:
       - name: Package ROM overlay
         run: |
           OVL="fod-native.zip"
-          mkdir -p overlay/system/bin overlay/system/lib64 overlay/system/etc/init
+          mkdir -p overlay/system/bin overlay/system/lib64 overlay/system/etc/init overlay/vendor
+          cp -r vendor/* overlay/vendor/
           
+          install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-servicemahiroaidl overlay/vendor/bin/hw/
+          install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-injectmahiroaidl overlay/vendor/bin/hw/
           install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-servicemahiroaidl overlay/system/bin/
           install -m 0755 rom/vendor/bin/hw/android.hardware.biometrics.fingerprint-injectmahiroaidl overlay/system/bin/
           install -m 0644 rom/system/lib64/libfodhook.so overlay/system/lib64/
