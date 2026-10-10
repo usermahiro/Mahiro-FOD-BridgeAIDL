@@ -46,7 +46,20 @@ perl -pi -e 's/OnScreenFingerprintDimLayer/VRI[RianixiaHBMController]\x00/g' /ve
 
 ---
 
-### 3. Pasang Native Bridge Components
+### 3. Patch Goodix HAL (`libgf_hal.so`)
+Pada Custom ROM, kernel/framework tidak lagi mengirimkan Netlink Uevent `TRAN_FULL_HBM_EVENT=FULL_HBM_SET` dan status `uiReadyStatus`, sehingga sensor Goodix macet menunggu dan tidak pernah melakukan capture gambar sidik jari.
+
+Gunakan skrip `patch_libgf_hal.py` pada file `/odm/lib64/libgf_hal.so`:
+
+```bash
+python3 patch_libgf_hal.py /path/to/libgf_hal.so
+```
+
+Gantikan `/odm/lib64/libgf_hal.so` di ROM dengan hasil patch.
+
+---
+
+### 4. Pasang Native Bridge Components
 Download artifact `fod-native.zip` dari [GitHub Actions](https://github.com/usermahiro/Mahiro-FOD-BridgeAIDL/actions) atau compile sendiri menggunakan `./build.sh`.
 
 Letakkan file-file berikut ke ROM:
@@ -60,7 +73,7 @@ Letakkan file-file berikut ke ROM:
 
 ---
 
-### 4. SELinux & Boot Awal
+### 5. SELinux & Boot Awal
 Untuk boot awal, pastikan menjalankan SELinux dalam mode **Permissive** (`setenforce 0` atau cmdline `androidboot.selinux=permissive`).
 
 ---
