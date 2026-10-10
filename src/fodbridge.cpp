@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <string>
 #include <thread>
-#include <chrono>
 
 #define LOG_TAG "fodbridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -57,23 +56,6 @@ static void sendSocket(char b) {
             g_sockFd = -1;
         }
     }
-}
-
-static bool shStatus(const std::string& cmd) {
-    return pclose(popen(cmd.c_str(), "r")) == 0;
-}
-
-static long g_fodCheckMs = 0;
-static int g_fodUi = 0;
-static bool fodUiActive() {
-    long now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (now - g_fodCheckMs < 1000) return g_fodUi != 0;
-    g_fodCheckMs = now;
-    g_fodUi = shStatus(
-        "dumpsys window windows | grep -A20 'OnScreenFingerprint' | grep -q 'mDrawState=HAS_DRAWN'")
-        ? 1 : 0;
-    return g_fodUi != 0;
 }
 
 static void writeHbm(int val) {
@@ -130,11 +112,9 @@ static void sendFingerBroadcastAsync(bool down) {
 static void onEdge(int st) {
     char c = st ? '1' : '0';
     sendSocket(c);
-    bool ui = fodUiActive();
-    if (st && ui) writeHbm(1);
-    if (!st) writeHbm(0);
+    writeHbm(st ? 1 : 0);
     sendFingerBroadcastAsync(st != 0);
-    LOGI("finger %s (fodUi=%d)", st ? "DOWN" : "UP", ui);
+    LOGI("finger %s (sent to socket & broadcast)", st ? "DOWN" : "UP");
 }
 
 int main(int argc, char** argv) {
