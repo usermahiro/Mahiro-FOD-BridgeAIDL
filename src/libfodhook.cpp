@@ -126,7 +126,68 @@ static void* worker(void*) {
         return (jclass)c;
     };
 
-    // Fix screen blackout on Lockscreen: force isDisableAppDimLayer -> true
+    // Align FOD icon with the physical sensor: read /sys/kernel/tran_fp/fod_location_xy
+// (centers, "x,y" from top) and set KeyguardFingerprintUtils.iconMarginBottom to
+// displayHeight - sensorY so the icon center sits exactly on the sensor.
+auto applyMargin = [&]() {
+    jclass cKFU = loadClass("com.oplus.systemui.biometrics.finger.KeyguardFingerprintUtils");
+    if (!cKFU) return;
+    int sensor = -1;
+    int height = -1;
+    FILE* f = fopen("/sys/kernel/tran_fp/fod_location_xy", "r");
+    if (f) {
+        int x = -1;
+        if (fscanf(f, "%d,%d", &x, &sensor) < 2) sensor = -1;
+        fclose(f);
+    }
+    f = fopen("/sys/class/graphics/fb0/virtual_size", "r");
+    if (f) {
+        int w = -1;
+        if (fscanf(f, "%d,%d", &w, &height) < 2) height = -1;
+        if (height < 0) { rewind(f); char c; if (fscanf(f, "%d %c %d", &w, &c, &height) < 3) height = -1; }
+        fclose(f);
+    }
+    jobject app2 = nullptr;
+    if (height <= 0) {
+        // fallback: real display height from the SystemUI context
+        jclass cAT2 = loadClass("android.app.ActivityThread");
+        jmethodID mCur2 = cAT2 ? env->GetStaticMethodID(cAT2, "currentApplication",
+            "()Landroid/app/Application;") : nullptr;
+        if (mCur2) app2 = env->CallStaticObjectMethod(cAT2, mCur2);
+        clr(env);
+    }
+    if (height <= 0 && app2) {
+        jmethodID mGetRes = env->GetMethodID(env->GetObjectClass(app2),
+            "getResources", "()Landroid/content/res/Resources;");
+        jobject res = mGetRes ? env->CallObjectMethod(app2, mGetRes) : nullptr;
+        jfieldID fH = 0;
+        if (res && !clr(env)) {
+            jmethodID mGetDM = env->GetMethodID(env->GetObjectClass(res),
+                "getDisplayMetrics", "()Landroid/util/DisplayMetrics;");
+            jobject dm = mGetDM ? env->CallObjectMethod(res, mGetDM) : nullptr;
+            if (dm && !clr(env)) {
+                fH = env->GetFieldID(env->GetObjectClass(dm), "heightPixels", "I");
+                if (fH) height = env->GetIntField(dm, fH);
+            }
+        }
+        clr(env);
+    }
+    if (sensor <= 0 || height <= 0) {
+        LOGE("could not read fod_location_xy (%d) / height (%d)", sensor, height);
+        return;
+    }
+    int margin = height - sensor;
+    if (margin < 0) margin = 0;
+    jfieldID fA = env->GetStaticFieldID(cKFU, "iconMarginBottom", "I");
+    jfieldID fB = env->GetStaticFieldID(cKFU, "iconMarginBottomProp", "I");
+    if (fA) env->SetStaticIntField(cKFU, fA, margin);
+    if (fB) env->SetStaticIntField(cKFU, fB, margin);
+    clr(env);
+    LOGI("iconMarginBottom overridden -> %d px (h=%d y=%d)", margin, height, sensor);
+};
+applyMargin();
+
+// Fix screen blackout on Lockscreen: force isDisableAppDimLayer -> true
     {
         jclass cOpt = loadClass("com.oplusos.systemui.common.feature.KeyguardFeatureOption");
         if (cOpt) {
@@ -182,6 +243,7 @@ static void* worker(void*) {
     }
     if (!gMech) { LOGE("could not resolve OnScreenFingerprintUiMech"); return nullptr; }
     LOGI("resolved OnScreenFingerprintUiMech + onFpTouch");
+    applyMargin();
 
     int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     sockaddr_un a; 
