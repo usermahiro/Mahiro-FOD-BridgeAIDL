@@ -296,7 +296,24 @@ impl FingerprintHal {
             return Ok(instance.clone());
         }
 
-        Self::open()
+        let mut last_err = String::from("unknown");
+        for attempt in 1..=20 {
+            match Self::open() {
+                Ok(h) => {
+                    log_info!("FingerprintHal initialized successfully on attempt {}", attempt);
+                    return Ok(h);
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    log_warn!(
+                        "FingerprintHal::open attempt {}/20 failed: {last_err} (retrying in 500ms...)",
+                        attempt
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+        }
+        anyhow::bail!("FingerprintHal failed to initialize after 20 attempts: {last_err}")
     }
 
     fn open() -> anyhow::Result<Arc<Self>> {

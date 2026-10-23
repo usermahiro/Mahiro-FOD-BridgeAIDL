@@ -40,6 +40,12 @@ def patch_libgf_hal(filepath):
     patch_uiready = bytes.fromhex("1f 20 03 d5 1f 20 03 d5 1f 20 03 d5")
     data[off_uiready : off_uiready + len(patch_uiready)] = patch_uiready
 
+    # Target 3: Bypass GF_IOC_INIT ioctl failure (kernel notifier double-register)
+    # File offset 0x43754 (vma 0x47754): cbz w0, 0x477c0 -> b 0x477c0
+    off_init_check = 0x43754
+    # 0x1400001B is "b +0x6c" -> jumps directly to success path at 0x477c0
+    data[off_init_check : off_init_check + 4] = bytes.fromhex("1b 00 00 14")
+
     outpath = filepath if filepath.endswith("_patched.so") else filepath + ".patched"
     with open(outpath, "wb") as f:
         f.write(data)
