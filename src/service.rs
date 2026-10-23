@@ -106,7 +106,7 @@ impl ISession for SessionService {
         let hal = self.hal.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(5));
-            hal.post_enroll();
+            hal.post_enroll(challenge as u64);
             log_info!("Dispatching onChallengeRevoked(0x{:x}) asynchronously", challenge);
             if let Err(e) = cb.onChallengeRevoked(challenge) {
                 log_error!("cb.onChallengeRevoked failed: {e}");

@@ -2,26 +2,33 @@
 
 A native Rust daemon that implements the Android AIDL fingerprint HAL (`android.hardware.biometrics.fingerprint.IFingerprint`) for Transsion devices (Tecno and Infinix on MediaTek Helio G99 / MT6789 / Dimensity platforms) running ported ColorOS 16 / 17 (Android 14+) or custom ROMs.
 
+Supports both **Silead** optical sensors (GSL7001 / `libsl_fp_impl.so`) and **Goodix** optical sensors (GW9598 / `libgf_hal.so` / `gf_fingerprint.default.so`).
+
 The entire implementation operates inside the `/vendor` partition, without requiring modifications to `/system` or `/system_ext`.
 
 ---
 
 ## 1. Technical Context & Problem Statement
 
-### HAL Generation Incompatibility
-- **Transsion KJ7 Base**: Stock Transsion vendor implementations use legacy HIDL HAL interfaces (`android.hardware.biometrics.fingerprint@2.1/2.3`).
-- **ColorOS Framework**: ColorOS 16 and 17 (Android 14+) require an AIDL HAL service (`android.hardware.biometrics.fingerprint.IFingerprint`). In addition, the ColorOS `OnScreenFingerprintUiMech` framework relies on vendor-specific Binder IPC transactions on `ISessionCallback` (transaction 1001 with command 1201 for `TouchDown` and command 1202 for `TouchUp`).
+### HAL Generation & Vendor ABI Incompatibility
+- **Transsion Base vs ColorOS Framework**: Stock Transsion implementations often use legacy HIDL HAL interfaces (`android.hardware.biometrics.fingerprint@2.1/2.3`). ColorOS 16 and 17 (Android 14+) require an AIDL HAL service (`android.hardware.biometrics.fingerprint.IFingerprint`). In addition, the ColorOS `OnScreenFingerprintUiMech` framework relies on vendor-specific Binder IPC transactions on `ISessionCallback` (transaction 1001 with command 1201 for `TouchDown` and command 1202 for `TouchUp`).
+- **Goodix Proprietary ABI Differences**:
+  - Legacy `goodix_fingerprint_device_t` extends `hw_device_t` with a total struct size of `0x130` bytes (unlike standard AOSP's `0xf0` bytes). Function pointers (such as `enumerate` at `0xb8`, `remove` at `0xc0`, and `authenticate` at `0xd0`) reside at different offsets.
+  - Goodix `remove` is a batch operation: `remove(dev, const u32 *ids, u32 count)`.
+  - Goodix internal notification messages (`fingerprint_msg_t`) omit the standard AOSP `gid` (group ID) field from payloads:
+    - `FINGERPRINT_TEMPLATE_ENROLLING`: `[fid (u32), samples_remaining (u32)]` (AOSP has `gid` + `fid` + `samples_remaining`). Reading standard struct offsets causes `samples_remaining` to be read as `0`, prematurely finishing enrollment on touch 1.
+    - `FINGERPRINT_AUTHENTICATED`: `[fid (u32), hat (hw_auth_token_t)]`. Offset 0 is `fid` and offset 4 is `hat`.
+    - `FINGERPRINT_TEMPLATE_ENUMERATING`: `[fid (u32), remaining (u32)]`.
 
-### MediaTek Kernel HBM Gating
-- Optical under-display fingerprint sensors (Silead GSL7001 / Goodix) require the AMOLED display area above the sensor to illuminate at High Brightness Mode (HBM) during optical acquisition.
-- In the MediaTek DRM display driver (`tran_lcm_hbm_set`), writing to the HBM control node is rejected if the display controller is in sleep or doze:
-  ```c
-  if (!crtc->enabled || !dsi->enabled || dsi->is_doze) {
-      pr_err("display state is slept or idle, skip set hbm node.\n");
-      return;
-  }
+### MediaTek Kernel HBM Gating & Control Node
+- Optical under-display fingerprint sensors require the AMOLED display area above the sensor to illuminate at High Brightness Mode (HBM) during optical acquisition.
+- On MediaTek Transsion devices (`nt37706a` panel / `mediatek_drm_v1`), the hardware HBM control is exposed via:
+  ```text
+  /sys/kernel/tran_display/lcm_hbm_state
   ```
-  Attempting to toggle HBM before the DRM driver fully transitions from doze to active causes HBM activation to fail silently.
+  Writing `"1\n"` invokes the kernel display driver's `tran_lcm_hbm_store` (`panel_hbm_set_cmdq_switch en=1`). Writing `"0\n"` disables HBM.
+- Reading this node returns a hex register value (e.g., `0xFA`), not `"0xOK"`. Polling for `"0xOK"` causes false timeouts.
+- In ported ColorOS ROMs, the ColorOS display daemon (`vendor.oplus.hardware.displaypanelfeature@1.0-service`) fails because `/dev/oplus_display` does not exist on MTK kernels. Direct hardware control of `lcm_hbm_state` is required.
 
 ### AOD & Sleep Power Conflicts
 - **Premature Dream Termination**: If an input handler injects `KEY_POWER` (keycode 116) while the device is in Always-On Display (AOD / Doze), `PowerManagerService` processes it as a physical power key press (`WAKE_REASON_POWER_BUTTON`). This triggers `DreamManager.stopDream()`, tearing down the AOD display window and destroying the on-screen fingerprint icon.
@@ -32,11 +39,13 @@ The entire implementation operates inside the `/vendor` partition, without requi
 ## 2. Architecture & Design
 
 - **Native Rust AIDL Implementation**: Implements `IFingerprint` and `ISession` using `rsbinder`. Directly handles custom ColorOS transactions:
-  - Command 1010: Total enrollment steps.
+  - Command 1010: Total enrollment steps (returns 20 for ColorOS enroll progress UI).
   - Command 1011: Screen state synchronization.
   - Transaction 1001 (commands 1201/1202): Direct touch dispatch to ColorOS SystemUI.
-- **Dynamic C Vendor Loader**: Loads the patched stock vendor binary (`libsl_fp_impl.so`) via `dlopen`/`dlsym`. Dispatches commands across a dedicated worker pool and strips non-standard vendor acquired messages (1001, 1002, 1020) that would otherwise cause framework errors.
-- **Synchronous HBM Controller**: Writes to `/sys/devices/platform/soc/14013000.dsi/lcm_hbm_state` in a polling loop until the kernel confirms the state change with `0xOK`. Synchronized with SystemUI display power requests (`requestDisplayPower`).
+- **Dual Vendor HAL Support**:
+  - **Silead**: Loads patched `libsl_fp_impl.so` via `dlopen`/`dlsym`. Dispatches commands across a dedicated worker pool and strips non-standard vendor acquired messages (1001, 1002, 1020).
+  - **Goodix**: Loads `libgf_hal.so` or `/odm/lib64/hw/gf_fingerprint.default.so`. Automatically adapts to `goodix_fingerprint_device_t` (0x130 bytes), batch removal, and unpacks vendor notify payloads without `gid`.
+- **Direct Hardware HBM Controller**: Writes directly to `/sys/kernel/tran_display/lcm_hbm_state` (`1\n` / `0\n`) with fallback writes to ColorOS addon paths (`/data/addon/oplus_display/hbm` and `notify_fppress`). Uses a generation-counted safety watchdog (10s) to prevent screen burn-in.
 - **Context-Aware Wake Engine**: Inspects the DRM panel state via `/sys/class/drm/card0-DSI-1/dpms`:
   - When DPMS is `Off` (deep sleep): Injects `KEY_POWER` into `/dev/input/event0` (PMIC keys) to wake the hardware display pipeline.
   - When DPMS is `On` (screen active or AOD): Suppresses power key injection completely. Holds an in-kernel wake lock (`oplus_udfps_fod_wake`) and lets ColorOS SystemUI transition the panel power state without breaking the AOD Dream lifecycle.
@@ -306,6 +315,25 @@ adb remount
 adb push out/vendor /
 ```
 
+### Method 3: Runtime Bind-Mount Testing (Read-Only EROFS Vendor/ODM)
+On modern devices where `/vendor` and `/odm` are read-only EROFS partitions, test dynamically using bind-mounts without flashing:
+
+```bash
+# Push binary to temporary writable storage
+adb push out/vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion /data/local/tmp/fp-bridge
+adb shell "chcon u:object_r:hal_fingerprint_default_exec:s0 /data/local/tmp/fp-bridge"
+
+# Stop existing service, bind-mount over stock binary, and restart
+adb shell "
+setprop ctl.stop vendor.fingerprint-default
+sleep 1
+umount /vendor/bin/hw/android.hardware.biometrics.fingerprint-service 2>/dev/null
+mount --bind /data/local/tmp/fp-bridge /vendor/bin/hw/android.hardware.biometrics.fingerprint-service
+chcon u:object_r:hal_fingerprint_default_exec:s0 /vendor/bin/hw/android.hardware.biometrics.fingerprint-service
+setprop ctl.start vendor.fingerprint-default
+"
+```
+
 ---
 
 ## 9. Verification & Diagnostics
@@ -319,17 +347,28 @@ adb shell dumpsys activity service android.hardware.biometrics.fingerprint.IFing
 
 ### 2. Monitor Authentication and HBM Logs
 ```bash
-adb logcat -s oplus_udfps_transsion fingerprint
+adb logcat -s oplus_udfps_transsion
 ```
 
-Typical output during successful authentication:
+Typical output during successful enrollment and HBM capture:
 ```text
-I oplus_udfps_transsion: FOD touch detected in sleep at (540, 2172) (KEY 195, screen_state=2) -> activating HBM and capture
-I oplus_udfps_transsion: notify_framework_touch(true): dispatched ColorOS binder transact 1001 (cmd 1201)
-I oplus_udfps_transsion: Hardware LCM HBM confirmed active (0xOK) in 248ms (attempts=12)
-I oplus_udfps_transsion: Authentication SUCCEEDED for fid 2144737483
-I oplus_udfps_transsion: Hardware LCM HBM disabled
-I oplus_udfps_transsion: notify_framework_touch(false): dispatched ColorOS binder transact 1001 (cmd 1202)
+I oplus_udfps_transsion: FOD touch coordinate confirmed via SYN_REPORT at (530, 2192) -> activating HBM and capture
+I oplus_udfps_transsion: on_pointer_down at (530, 2192) (screen_state=1) -> activating HBM & optical capture
+I oplus_udfps_transsion: Hardware LCM HBM & OPPO display enabled
+I oplus_udfps_transsion: Enroll progress: raw_fid -2135191572, raw_remaining 10
+I oplus_udfps_transsion: Hardware LCM HBM & OPPO display disabled
+I oplus_udfps_transsion: Reporting enrollment progress: fid -2135191572, remaining 10
+...
+I oplus_udfps_transsion: Enrollment completed successfully (final fid -2135191572)
+```
+
+Verify in kernel dmesg that hardware HBM toggles cleanly:
+```bash
+adb shell "dmesg | grep -E 'tran_lcm_hbm|panel_hbm'"
+```
+```text
+[LCM] panel_hbm_set_cmdq_switch FPS=120Hz en=1, mapped_level=656, aod=0
+[LCM] panel_hbm_set_cmdq_switch FPS=120Hz en=0, mapped_level=656, aod=0
 ```
 
 ### 3. Verify Pressed Icon Window Dimensions
