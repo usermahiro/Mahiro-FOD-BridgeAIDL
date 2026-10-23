@@ -368,11 +368,6 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 match target {
                                                     Some((tx, ty)) => {
                                                         if is_inside_fod_area(tx, ty) {
-                                                            // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                            // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                            if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                                wake_display_pipeline();
-                                                            }
                                                             acquire_wakelock("oplus_udfps_fod_wake");
                                                             log_info!(
                                                                 "FOD touch detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
@@ -406,11 +401,6 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 };
                                                 if let Some((tx, ty)) = target {
                                                     if is_inside_fod_area(tx, ty) {
-                                                        // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                        // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                        if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                            wake_display_pipeline();
-                                                        }
                                                         acquire_wakelock("oplus_udfps_fod_wake");
                                                         log_info!(
                                                             "FOD gesture pulse detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
@@ -442,17 +432,10 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         // Only trigger when touch coordinate falls precisely inside calibrated FOD area!
                                         if touch_active && !is_down {
                                             if is_inside_fod_area(cur_x, cur_y) {
-                                                // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                    wake_display_pipeline();
-                                                }
                                                 log_info!("FOD touch coordinate confirmed via SYN_REPORT at ({}, {}) -> activating HBM and capture", cur_x, cur_y);
                                                 is_down = true;
                                                 last_down_time = std::time::Instant::now();
                                                 hal.on_pointer_down(cur_x, cur_y, 0.0, 0.0);
-                                            } else if cur_x >= 0 && cur_y >= 0 {
-                                                // Coordinate is outside FOD area: completely ignore!
                                             }
                                         }
                                     }

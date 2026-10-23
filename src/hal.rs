@@ -965,11 +965,16 @@ impl FingerprintHal {
         let screen_state = self.get_screen_state();
 
         if !self.is_active() {
-            log_debug!(
-                "on_pointer_down received while session inactive (screen_state={}) -> ignored",
-                screen_state
-            );
-            return;
+            if screen_state != 1 {
+                log_info!("on_pointer_down in sleep/doze (state={}) while inactive -> auto-starting authenticate for SOFOD", screen_state);
+                self.authenticate(0);
+            } else {
+                log_debug!(
+                    "on_pointer_down received while session inactive (screen_state={}) -> ignored",
+                    screen_state
+                );
+                return;
+            }
         }
 
         if self.is_finger_down.swap(true, Ordering::SeqCst) {

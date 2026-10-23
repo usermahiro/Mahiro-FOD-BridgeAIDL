@@ -349,10 +349,20 @@ impl IFingerprint for FingerprintService {
     ) -> rsbinder::BinderResult<Strong<dyn ISession>> {
         log_info!("IFingerprint::createSession called (sensorId={}, userId={})", sensor_id, user_id);
 
-        let hal = match FingerprintHal::get_instance() {
+        let mut hal_res = FingerprintHal::get_instance();
+        for attempt in 1..=10 {
+            if hal_res.is_ok() {
+                break;
+            }
+            log_warn!("FingerprintHal::get_instance attempt {} failed, retrying in 300ms...", attempt);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            hal_res = FingerprintHal::get_instance();
+        }
+
+        let hal = match hal_res {
             Ok(h) => h,
             Err(e) => {
-                log_error!("Failed to obtain FingerprintHal instance in createSession: {e}");
+                log_error!("Failed to obtain FingerprintHal instance in createSession after retries: {e}");
                 return Err(rsbinder::Status::from(rsbinder::StatusCode::Unknown));
             }
         };
