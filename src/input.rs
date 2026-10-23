@@ -219,6 +219,41 @@ pub fn find_power_key_device() -> Option<(File, String)> {
     None
 }
 
+pub const KEY_WAKEUP: u16 = 143;
+
+pub fn find_wake_key_device() -> Option<(File, String)> {
+    let dir = std::fs::read_dir("/dev/input").ok()?;
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name()?.to_string_lossy();
+        if !file_name.starts_with("event") {
+            continue;
+        }
+
+        let file = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        let fd = file.as_raw_fd();
+        let name = get_device_name(fd);
+        let key_bits = get_key_bits(fd);
+
+        if name.contains("tran-keys") || test_bit(KEY_WAKEUP as usize, &key_bits) {
+            let path_str = path.to_string_lossy().into_owned();
+            log_info!("Found wake key device: {} ({})", path_str, name);
+            return Some((file, path_str));
+        }
+    }
+
+    find_power_key_device()
+}
+
 pub fn wake_display_pipeline() {
     let mut last_wake = LAST_WAKE_TIME.lock();
     if let Some(t) = *last_wake {
@@ -229,14 +264,23 @@ pub fn wake_display_pipeline() {
     }
     *last_wake = Some(std::time::Instant::now());
 
-    let (dev_file, path) = match find_power_key_device() {
-        Some(pair) => pair,
-        None => match OpenOptions::new().write(true).open("/dev/input/event0") {
-            Ok(f) => (f, "/dev/input/event0".to_string()),
-            Err(e) => {
-                log_warn!("wake_display_pipeline: failed to open power key device: {e}");
-                return;
+    let (dev_file, path, code) = match find_wake_key_device() {
+        Some((f, p)) => {
+            if p.contains("event2") || p.contains("tran-keys") {
+                (f, p, KEY_WAKEUP)
+            } else {
+                (f, p, 116)
             }
+        }
+        None => match OpenOptions::new().write(true).open("/dev/input/event2") {
+            Ok(f) => (f, "/dev/input/event2".to_string(), KEY_WAKEUP),
+            Err(_) => match OpenOptions::new().write(true).open("/dev/input/event0") {
+                Ok(f) => (f, "/dev/input/event0".to_string(), 116),
+                Err(e) => {
+                    log_warn!("wake_display_pipeline: failed to open wake/power key device: {e}");
+                    return;
+                }
+            },
         },
     };
 
@@ -245,7 +289,7 @@ pub fn wake_display_pipeline() {
     let ev_down = InputEvent {
         time: libc::timeval { tv_sec: 0, tv_usec: 0 },
         type_: EV_KEY,
-        code: 116, // KEY_POWER
+        code,
         value: 1,
     };
     let ev_syn = InputEvent {
@@ -257,7 +301,7 @@ pub fn wake_display_pipeline() {
     let ev_up = InputEvent {
         time: libc::timeval { tv_sec: 0, tv_usec: 0 },
         type_: EV_KEY,
-        code: 116, // KEY_POWER
+        code,
         value: 0,
     };
 
@@ -274,7 +318,7 @@ pub fn wake_display_pipeline() {
         let _ = dev.write_all(p_syn);
     }
 
-    log_info!("wake_display_pipeline: injected KEY_POWER pulse via {} to exit doze/sleep", path);
+    log_info!("wake_display_pipeline: injected KEY {} pulse via {} to exit doze/sleep", code, path);
 }
 
 pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
@@ -376,6 +420,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                             is_down = true;
                                                             last_down_time = std::time::Instant::now();
                                                             hal.on_pointer_down(tx, ty, 0.0, 0.0);
+                                                            if !crate::hal::FingerprintHal::is_display_dpms_on() {
+                                                                wake_display_pipeline();
+                                                            }
                                                         } else {
                                                             log_info!(
                                                                 "FOD touch rejected at ({}, {}): outside calibrated FOD area (KEY {})",
@@ -401,6 +448,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 };
                                                 if let Some((tx, ty)) = target {
                                                     if is_inside_fod_area(tx, ty) {
+                                                        if !crate::hal::FingerprintHal::is_display_dpms_on() {
+                                                            wake_display_pipeline();
+                                                        }
                                                         acquire_wakelock("oplus_udfps_fod_wake");
                                                         log_info!(
                                                             "FOD gesture pulse detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
@@ -429,9 +479,12 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         }
                                     } else if event.type_ == EV_SYN && event.code == 0 {
                                         // SYN_REPORT: Full multi-touch frame synchronized
-                                        // Only trigger when touch coordinate falls precisely inside calibrated FOD area!
-                                        if touch_active && !is_down {
+                                        // Only trigger in deep sleep / doze. When screen is ON (state 1), framework dispatches onPointerDown!
+                                        if touch_active && !is_down && hal.get_screen_state() != 1 {
                                             if is_inside_fod_area(cur_x, cur_y) {
+                                                if !crate::hal::FingerprintHal::is_display_dpms_on() {
+                                                    wake_display_pipeline();
+                                                }
                                                 log_info!("FOD touch coordinate confirmed via SYN_REPORT at ({}, {}) -> activating HBM and capture", cur_x, cur_y);
                                                 is_down = true;
                                                 last_down_time = std::time::Instant::now();

@@ -965,16 +965,12 @@ impl FingerprintHal {
         let screen_state = self.get_screen_state();
 
         if !self.is_active() {
-            if screen_state != 1 {
-                log_info!("on_pointer_down in sleep/doze (state={}) while inactive -> auto-starting authenticate for SOFOD", screen_state);
-                self.authenticate(0);
-            } else {
-                log_debug!(
-                    "on_pointer_down received while session inactive (screen_state={}) -> ignored",
-                    screen_state
-                );
+            if screen_state == 1 {
+                log_debug!("on_pointer_down while inactive and screen is ON -> ignored");
                 return;
             }
+            log_info!("on_pointer_down while inactive (screen_state={}) -> auto-starting authenticate for SOFOD", screen_state);
+            self.authenticate(0);
         }
 
         if self.is_finger_down.swap(true, Ordering::SeqCst) {
@@ -1020,9 +1016,9 @@ impl FingerprintHal {
         // Fast settling delay (5ms) for CMOS exposure uniformity aligned with ColorOS animation flare
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        // Re-check if finger was lifted or session became inactive during settling delay
-        if !self.is_finger_down.load(Ordering::SeqCst) || !self.is_active() {
-            log_info!("Finger lifted or session inactive during settling delay, aborting capture");
+        // Re-check if finger was lifted during settling delay
+        if !self.is_finger_down.load(Ordering::SeqCst) {
+            log_info!("Finger lifted during settling delay, aborting capture");
             crate::hbm::set_hbm(false);
             if self.get_screen_state() == 0 {
                 crate::input::release_wakelock("oplus_udfps_fod_wake");
