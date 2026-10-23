@@ -206,6 +206,10 @@ mkdir -p "$OUT_DIR/vendor/etc/vintf/manifest"
 cp -f "$BIN" "$OUT_DIR/vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion"
 chmod 0755 "$OUT_DIR/vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion"
 
+# Provide a copy with the stock filename so we can safely replace the stock vendor fingerprint service
+cp -f "$BIN" "$OUT_DIR/vendor/bin/hw/android.hardware.biometrics.fingerprint-service"
+chmod 0755 "$OUT_DIR/vendor/bin/hw/android.hardware.biometrics.fingerprint-service"
+
 cp -f "${SCRIPT_DIR}/android.hardware.biometrics.fingerprint-service.transsion.rc" "$OUT_DIR/vendor/etc/init/"
 chmod 0644 "$OUT_DIR/vendor/etc/init/android.hardware.biometrics.fingerprint-service.transsion.rc"
 
