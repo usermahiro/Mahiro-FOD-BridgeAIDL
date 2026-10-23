@@ -1131,6 +1131,10 @@ impl FingerprintHal {
                     self.send_custom_cmd(10, 0, 0x10001, 0);
                     log_info!("Authentication SUCCEEDED for fid {}", fid);
                     let _ = cb.onAuthenticationSucceeded(fid, &hat);
+                    if self.get_screen_state() == 0 && !Self::is_display_dpms_on() {
+                        log_info!("SOFOD authentication succeeded while display was fully asleep. Waking display pipeline");
+                        crate::input::wake_display_pipeline();
+                    }
                 } else {
                     log_info!("Authentication FAILED (unrecognized finger, keeping session active for next touch)");
                     let _ = cb.onAuthenticationFailed();
