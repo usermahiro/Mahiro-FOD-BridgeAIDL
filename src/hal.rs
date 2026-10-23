@@ -795,9 +795,11 @@ impl FingerprintHal {
             log_info!("silfp_worker_screen_state_callback({}) returned {}", vendor_state, ret);
         }
 
-        // Ensure HBM is deactivated and finger state reset across screen transitions
-        crate::hbm::set_hbm(false);
-        self.is_finger_down.store(false, Ordering::SeqCst);
+        // Ensure HBM is deactivated and finger state reset when entering screen OFF
+        if state == 0 {
+            crate::hbm::set_hbm(false);
+            self.is_finger_down.store(false, Ordering::SeqCst);
+        }
 
         match state {
             0 => {

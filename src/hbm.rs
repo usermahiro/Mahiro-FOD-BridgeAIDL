@@ -44,6 +44,9 @@ impl HbmController {
         let val_tran = if enabled { b"1\n" } else { b"0\n" };
         if let Err(e) = fs::write(TRAN_LCM_HBM_STATE, val_tran) {
             log_warn!("Failed to write to {}: {}", TRAN_LCM_HBM_STATE, e);
+        } else if enabled {
+            std::thread::sleep(Duration::from_millis(30));
+            let _ = fs::write(TRAN_LCM_HBM_STATE, val_tran);
         }
 
         // 2. ColorOS display addon command files (fallback)

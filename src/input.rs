@@ -412,6 +412,10 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 match target {
                                                     Some((tx, ty)) => {
                                                         if is_inside_fod_area(tx, ty) {
+                                                            if !crate::hal::FingerprintHal::is_display_dpms_on() {
+                                                                wake_display_pipeline();
+                                                                std::thread::sleep(std::time::Duration::from_millis(60));
+                                                            }
                                                             acquire_wakelock("oplus_udfps_fod_wake");
                                                             log_info!(
                                                                 "FOD touch detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
@@ -420,9 +424,6 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                             is_down = true;
                                                             last_down_time = std::time::Instant::now();
                                                             hal.on_pointer_down(tx, ty, 0.0, 0.0);
-                                                            if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                                wake_display_pipeline();
-                                                            }
                                                         } else {
                                                             log_info!(
                                                                 "FOD touch rejected at ({}, {}): outside calibrated FOD area (KEY {})",
@@ -450,6 +451,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                     if is_inside_fod_area(tx, ty) {
                                                         if !crate::hal::FingerprintHal::is_display_dpms_on() {
                                                             wake_display_pipeline();
+                                                            std::thread::sleep(std::time::Duration::from_millis(60));
                                                         }
                                                         acquire_wakelock("oplus_udfps_fod_wake");
                                                         log_info!(
@@ -484,6 +486,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                             if is_inside_fod_area(cur_x, cur_y) {
                                                 if !crate::hal::FingerprintHal::is_display_dpms_on() {
                                                     wake_display_pipeline();
+                                                    std::thread::sleep(std::time::Duration::from_millis(60));
                                                 }
                                                 log_info!("FOD touch coordinate confirmed via SYN_REPORT at ({}, {}) -> activating HBM and capture", cur_x, cur_y);
                                                 is_down = true;

@@ -1,24 +1,22 @@
-service vendor.fingerprint-default /vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion
+# Transsion FOD AIDL HAL service
+service vendor.fingerprint-transsion /vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion default
     class hal
     user system
-    group system input uhid wakelock
-    capabilities BLOCK_SUSPEND WAKE_ALARM
+    group system input wakelock
     interface aidl android.hardware.biometrics.fingerprint.IFingerprint/default
-    writepid /dev/cpuset/system-background/tasks
+    task_profiles ProcessCapacityHigh
+    capabilities SYS_NICE
 
-on early-boot
+on boot
+    # Disable stock Transsion HIDL fingerprint service if present
+    stop vendor.fingerprint-default
+    # Set properties required for optical FOD
     setprop vendor.fingerprint.aidl.support 1
-    setprop persist.sys.block.fingerprint false
 
-on post-fs-data
-    setprop vendor.fingerprint.aidl.support 1
-    setprop persist.sys.block.fingerprint false
-    mkdir /data/vendor_de/0/fpdata 0700 system system
-    write /proc/fingerprint_status 1
-    write /proc/gesture_function fp1
+    # Ensure touch gesture nodes and display nodes are accessible by system
     chmod 0666 /sys/class/input/event4/device/device/fts_gesture_mode
-    chmod 0666 /sys/class/input/event3/device/device/fts_gesture_mode
-
-on property:sys.boot_completed=1
-    start vendor.fingerprint-default
-
+    chmod 0666 /sys/kernel/tran_display/lcm_hbm_state
+    chmod 0666 /proc/gesture_function
+    chmod 0666 /proc/fingerprint_status
+    chmod 0666 /sys/power/wake_lock
+    chmod 0666 /sys/power/wake_unlock
