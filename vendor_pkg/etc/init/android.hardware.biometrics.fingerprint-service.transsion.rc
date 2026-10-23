@@ -1,0 +1,14 @@
+# Transsion FOD AIDL HAL service
+service vendor.fingerprint-transsion /vendor/bin/hw/android.hardware.biometrics.fingerprint-service.transsion default
+    class hal
+    user system
+    group system input
+    interface aidl android.hardware.biometrics.fingerprint.IFingerprint/default
+    task_profiles ProcessCapacityHigh
+    capabilities SYS_NICE
+
+on boot
+    # Disable stock Transsion HIDL fingerprint service if present
+    stop vendor.fingerprint-default
+    # Set properties required for optical FOD
+    setprop vendor.fingerprint.aidl.support 1
