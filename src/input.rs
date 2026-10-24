@@ -321,6 +321,49 @@ pub fn wake_display_pipeline() {
     log_info!("wake_display_pipeline: injected KEY {} pulse via {} to exit doze/sleep", code, path);
 }
 
+
+/// Lama logo FOD ditahan (display tetap hidup) setelah sensor disentuh saat screen off.
+pub const SOFOD_LOGO_HOLD_MS: u64 = 5000;
+static LOGO_HOLD_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Fake SOFOD: saat layar benar-benar mati dan sensor ditekan, HAL hanya inject KEY_WAKEUP.
+/// Capture TIDAK dilakukan sekarang; ditandai lewat `pending` dan dieksekusi oleh monitor loop
+/// begitu layar sudah nyala, selama jari masih menempel (tidak perlu tekan ulang).
+/// Wakelock ditahan SOFOD_LOGO_HOLD_MS supaya layar/logo tidak langsung padam.
+/// Return true kalau event ini sudah ditangani (caller skip jalur capture lama).
+pub fn try_screen_off_wake_only(
+    hal: &Arc<crate::hal::FingerprintHal>,
+    fired: &mut bool,
+    pending: &mut Option<(std::time::Instant, i32, i32)>,
+    x: i32,
+    y: i32,
+) -> bool {
+    let screen_off = hal.get_screen_state() == 0 || !crate::hal::FingerprintHal::is_display_dpms_on();
+    if !screen_off {
+        return false;
+    }
+    if *fired {
+        // sentuhan yang sama masih ditahan, jangan wake berulang
+        return true;
+    }
+    *fired = true;
+
+    log_info!("SOFOD fake: sensor pressed while screen off -> KEY_WAKEUP, auto-capture after display on (logo hold {}ms)", SOFOD_LOGO_HOLD_MS);
+    wake_display_pipeline();
+    *pending = Some((std::time::Instant::now(), x, y));
+
+    acquire_wakelock("oplus_udfps_logo_hold");
+    let gen = LOGO_HOLD_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(SOFOD_LOGO_HOLD_MS));
+        if LOGO_HOLD_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+            release_wakelock("oplus_udfps_logo_hold");
+            log_info!("SOFOD wake-only: logo hold ended ({}ms)", SOFOD_LOGO_HOLD_MS);
+        }
+    });
+    true
+}
+
 pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
     ensure_gesture_fod_enabled();
 
@@ -347,6 +390,8 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                 let mut cur_x: i32 = -1;
                 let mut cur_y: i32 = -1;
                 let mut touch_active = false;
+                let mut wake_fired = false;
+                let mut pending_capture: Option<(std::time::Instant, i32, i32)> = None;
 
                 let event_size = std::mem::size_of::<InputEvent>();
                 let mut buf = vec![0u8; event_size * 16];
@@ -388,6 +433,8 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         } else if event.code == ABS_MT_TRACKING_ID {
                                             if event.value == -1 {
                                                 touch_active = false;
+                                                wake_fired = false;
+                                                pending_capture = None;
                                                 cur_x = -1;
                                                 cur_y = -1;
                                                 if is_down {
@@ -412,6 +459,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 match target {
                                                     Some((tx, ty)) => {
                                                         if is_inside_fod_area(tx, ty) {
+                                                            if try_screen_off_wake_only(&hal, &mut wake_fired, &mut pending_capture, tx, ty) {
+                                                                continue;
+                                                            }
                                                             if !crate::hal::FingerprintHal::is_display_dpms_on() {
                                                                 wake_display_pipeline();
                                                                 std::thread::sleep(std::time::Duration::from_millis(60));
@@ -449,6 +499,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 };
                                                 if let Some((tx, ty)) = target {
                                                     if is_inside_fod_area(tx, ty) {
+                                                        if try_screen_off_wake_only(&hal, &mut wake_fired, &mut pending_capture, tx, ty) {
+                                                            continue;
+                                                        }
                                                         if !crate::hal::FingerprintHal::is_display_dpms_on() {
                                                             wake_display_pipeline();
                                                             std::thread::sleep(std::time::Duration::from_millis(60));
@@ -469,6 +522,8 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 touch_active = true;
                                             } else if event.value == 0 {
                                                 touch_active = false;
+                                                wake_fired = false;
+                                                pending_capture = None;
                                                 cur_x = -1;
                                                 cur_y = -1;
                                                 if is_down {
@@ -484,6 +539,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         // Only trigger in deep sleep / doze. When screen is ON (state 1), framework dispatches onPointerDown!
                                         if touch_active && !is_down && hal.get_screen_state() != 1 {
                                             if is_inside_fod_area(cur_x, cur_y) {
+                                                if try_screen_off_wake_only(&hal, &mut wake_fired, &mut pending_capture, cur_x, cur_y) {
+                                                    continue;
+                                                }
                                                 if !crate::hal::FingerprintHal::is_display_dpms_on() {
                                                     wake_display_pipeline();
                                                     std::thread::sleep(std::time::Duration::from_millis(60));
@@ -511,6 +569,36 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                         }
                         log_warn!("Poll error: {err}, re-opening...");
                         break;
+                    }
+
+
+                    // Fake SOFOD: layar sudah nyala setelah KEY_WAKEUP dan jari masih menempel
+                    // -> langsung capture tanpa perlu tekan ulang.
+                    if let Some((t0, px, py)) = pending_capture {
+                        let el = t0.elapsed();
+                        if el >= std::time::Duration::from_millis(1500) {
+                            log_warn!("SOFOD fake: display did not come on within 1500ms, giving up");
+                            pending_capture = None;
+                        } else if crate::hal::FingerprintHal::is_display_dpms_on()
+                            && el >= std::time::Duration::from_millis(120)
+                        {
+                            pending_capture = None;
+                            // Beri waktu framework (keyguard) memulai sesi authenticate
+                            let mut waited = 0;
+                            while !hal.is_active() && waited < 600 {
+                                std::thread::sleep(std::time::Duration::from_millis(20));
+                                waited += 20;
+                            }
+                            if !hal.is_active() {
+                                log_info!("SOFOD fake: framework session not active after {}ms -> starting authenticate", waited);
+                                hal.authenticate(0);
+                            }
+                            acquire_wakelock("oplus_udfps_fod_wake");
+                            log_info!("SOFOD fake: display on, finger still held at ({}, {}) -> auto capture", px, py);
+                            is_down = true;
+                            last_down_time = std::time::Instant::now();
+                            hal.on_pointer_down(px, py, 0.0, 0.0);
+                        }
                     }
 
                     // If HAL cleared finger state (e.g. on screen transition to sleep/off or session cancel), sync is_down

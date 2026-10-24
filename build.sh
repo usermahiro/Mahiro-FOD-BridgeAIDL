@@ -242,23 +242,35 @@ fi
 cp -f "${SCRIPT_DIR}/patch_libsl_fp.py" "$OUT_DIR/" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/patch_libgf_hal.py" "$OUT_DIR/" 2>/dev/null || true
 
-# 6. Package archives
-log_info "Packaging distribution archives..."
-tar -czf "${OUT_DIR}/transsion-vendor-fod-package.tar.gz" -C "${OUT_DIR}" vendor
+# 6. Assemble ODM partition files (Goodix gf HAL + init override)
+if [ -d "${SCRIPT_DIR}/odm_pkg" ]; then
+    log_info "Assembling odm layout..."
+    mkdir -p "$OUT_DIR/odm/etc/init" "$OUT_DIR/odm/lib64/hw"
+    cp -f "${SCRIPT_DIR}/odm_pkg/etc/init/fingerprint-default.rc" "$OUT_DIR/odm/etc/init/"
+    cp -f "${SCRIPT_DIR}/odm_pkg/lib64/hw/gf_fingerprint.default.so" "$OUT_DIR/odm/lib64/hw/"
+    # libgf_hal.so in odm_pkg is already patched (identical to libgf_hal.so.patched)
+    cp -f "${SCRIPT_DIR}/odm_pkg/lib64/libgf_hal.so" "$OUT_DIR/odm/lib64/"
+    chmod 0644 "$OUT_DIR/odm/etc/init/"*.rc "$OUT_DIR/odm/lib64/"*.so "$OUT_DIR/odm/lib64/hw/"*.so
+fi
+
+# 7. Package archives -> top-level layout: vendor/  odm/
+log_info "Packaging distribution archives (vendor + odm)..."
+PKG_DIRS=(vendor)
+[ -d "${OUT_DIR}/odm" ] && PKG_DIRS+=(odm)
+
+tar -czf "${OUT_DIR}/transsion-vendor-fod-package.tar.gz" -C "${OUT_DIR}" "${PKG_DIRS[@]}"
 
 if command -v zip &>/dev/null; then
-    (cd "${OUT_DIR}" && zip -rq "transsion-vendor-fod-package.zip" vendor patch_*.py 2>/dev/null || zip -rq "transsion-vendor-fod-package.zip" vendor)
+    (cd "${OUT_DIR}" && zip -rq "transsion-vendor-fod-package.zip" "${PKG_DIRS[@]}")
 else
-    python3 -c '
+    PKG_DIRS_CSV="${PKG_DIRS[*]}" python3 -c '
 import zipfile, os
 os.chdir("'"${OUT_DIR}"'")
 with zipfile.ZipFile("transsion-vendor-fod-package.zip", "w", zipfile.ZIP_DEFLATED) as z:
-    for root, _, files in os.walk("vendor"):
-        for f in files:
-            z.write(os.path.join(root, f))
-    for f in ["patch_libsl_fp.py", "patch_libgf_hal.py"]:
-        if os.path.exists(f):
-            z.write(f)
+    for d in os.environ["PKG_DIRS_CSV"].split():
+        for root, _, files in os.walk(d):
+            for f in files:
+                z.write(os.path.join(root, f))
 '
 fi
 
@@ -267,5 +279,5 @@ log_success "Build completed successfully!"
 echo -e "${BOLD}Output Files (${OUT_DIR}):${NC}"
 ls -lh "${OUT_DIR}" | grep -E '\.(tar\.gz|zip)$' || true
 echo ""
-echo -e "${BOLD}Vendor Files Structure:${NC}"
-find "${OUT_DIR}/vendor" -type f -exec ls -lh {} +
+echo -e "${BOLD}Package Files Structure:${NC}"
+find "${OUT_DIR}/vendor" "${OUT_DIR}/odm" -type f -exec ls -lh {} + 2>/dev/null
