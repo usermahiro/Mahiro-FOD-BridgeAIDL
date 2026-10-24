@@ -248,7 +248,6 @@ if [ -d "${SCRIPT_DIR}/odm_pkg" ]; then
     mkdir -p "$OUT_DIR/odm/etc/init" "$OUT_DIR/odm/lib64/hw"
     cp -f "${SCRIPT_DIR}/odm_pkg/etc/init/fingerprint-default.rc" "$OUT_DIR/odm/etc/init/"
     cp -f "${SCRIPT_DIR}/odm_pkg/lib64/hw/gf_fingerprint.default.so" "$OUT_DIR/odm/lib64/hw/"
-    # libgf_hal.so in odm_pkg is already patched (identical to libgf_hal.so.patched)
     cp -f "${SCRIPT_DIR}/odm_pkg/lib64/libgf_hal.so" "$OUT_DIR/odm/lib64/"
     chmod 0644 "$OUT_DIR/odm/etc/init/"*.rc "$OUT_DIR/odm/lib64/"*.so "$OUT_DIR/odm/lib64/hw/"*.so
 fi

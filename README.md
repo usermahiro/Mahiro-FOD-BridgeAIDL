@@ -248,25 +248,12 @@ All artifacts install strictly into `/vendor`:
 The following system properties configure optical sensor geometry, framework behavior, and UI animation modes. These properties can be placed in `/vendor/etc/special.prop` or system `build.prop` files:
 
 ```properties
-# Identifies the HAL as an AIDL interface in ColorOS AuthService
 vendor.fingerprint.aidl.support=1
-
-# Disables biometrics screen-blocking policy so the AMOLED panel stays on during auth
 persist.sys.block.fingerprint=false
-
-# Dimensions of the pressed icon animation window in pixels (e.g., 200)
 persist.vendor.fingerprint.optical.iconsize=200
-
-# Vertical offset of the optical icon in pixels from the bottom of the screen
 persist.vendor.fingerprint.optical.iconlocation=228
-
-# Physical center coordinates of the sensor (X::Y format, e.g., 540::2172)
 persist.vendor.fingerprint.optical.sensorlocation=540::2172
-
-# Optical animation style index (e.g., 5 = white illumination for Silead)
 persist.vendor.fingerprint.optical.iconnumber=5
-
-# ColorOS animation render mode (2 = Frame-by-frame WebP drawables, avoids missing .coz vector assets)
 persist.sys.oplus.anim_level=2
 ```
 

@@ -1,5 +1,4 @@
-# Disable stock ODM HIDL fingerprint HAL
-service vendor.fingerprint-default /odm/bin/hw/android.hardware.biometrics.fingerprint-service default
+service vendor.fingerprint-default /vendor/bin/hw/android.hardware.biometrics.fingerprint-service default
     class hal
     user system
     group system input
