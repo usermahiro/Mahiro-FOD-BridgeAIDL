@@ -266,11 +266,15 @@ pub fn wake_display_pipeline() {
 
     let (dev_file, path, code) = match find_wake_key_device() {
         Some((f, p)) => {
-            if p.contains("event2") || p.contains("tran-keys") {
-                (f, p, KEY_WAKEUP)
+            // Pilih keycode dari kemampuan device (bukan dari nama path), karena
+            // path selalu "/dev/input/eventN" dan tidak pernah berisi "tran-keys".
+            let bits = get_key_bits(f.as_raw_fd());
+            let code = if test_bit(KEY_WAKEUP as usize, &bits) {
+                KEY_WAKEUP
             } else {
-                (f, p, 116)
-            }
+                116
+            };
+            (f, p, code)
         }
         None => match OpenOptions::new().write(true).open("/dev/input/event2") {
             Ok(f) => (f, "/dev/input/event2".to_string(), KEY_WAKEUP),
@@ -585,7 +589,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                             pending_capture = None;
                             // Beri waktu framework (keyguard) memulai sesi authenticate
                             let mut waited = 0;
-                            while !hal.is_active() && waited < 600 {
+                            while !hal.is_active() && waited < 1500 {
                                 std::thread::sleep(std::time::Duration::from_millis(20));
                                 waited += 20;
                             }

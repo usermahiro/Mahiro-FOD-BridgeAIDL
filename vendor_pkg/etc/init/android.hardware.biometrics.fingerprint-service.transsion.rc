@@ -10,6 +10,12 @@ service vendor.fingerprint-transsion /vendor/bin/hw/android.hardware.biometrics.
 on boot
     stop vendor.fingerprint-default
     setprop vendor.fingerprint.aidl.support 1
+    setprop persist.sys.block.fingerprint false
+    setprop persist.vendor.fingerprint.optical.iconsize 200
+    setprop persist.vendor.fingerprint.optical.iconlocation 228
+    setprop persist.vendor.fingerprint.optical.sensorlocation 540::2172
+    setprop persist.vendor.fingerprint.optical.iconnumber 5
+    setprop persist.sys.oplus.anim_level 2
 
 on post-fs-data
     write /proc/gesture_function fp1
