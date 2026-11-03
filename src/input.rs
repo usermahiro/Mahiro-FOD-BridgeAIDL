@@ -476,6 +476,14 @@ pub fn load_sofod_config() -> SofodConfig {
 }
 
 pub fn refire_sofod_touch(px: i32, py: i32, default_path: &str) {
+    // Jika layar sudah ON (state=1), jangan refire sentuhan buatan.
+    // Biarkan sentuhan alami dari sensor FOD yang memicu on_pointer_down di HAL.
+    // Refire hanya diperlukan saat layar masih OFF agar sistem menerima sentuhan.
+    if crate::hal::FingerprintHal::is_display_dpms_on() {
+        log_info!("SOFOD refire: screen already ON (DPMS on), skipping injected touch");
+        SOFOD_REFIRE_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+        return;
+    }
     if SOFOD_REFIRE_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
         log_info!("SOFOD refire: already active, skipping duplicate");
         return;
