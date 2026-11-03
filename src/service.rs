@@ -155,6 +155,14 @@ impl ISession for SessionService {
             if ret != 0 {
                 log_warn!("hal.authenticate returned {ret}");
             }
+            if let Some((px, py)) = crate::input::check_and_consume_recent_sofod_touch() {
+                log_info!("SOFOD: active authenticate session ready -> executing optical capture at ({}, {})", px, py);
+                let hal_clone = hal.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    hal_clone.on_pointer_down(px, py, 0.0, 0.0);
+                });
+            }
         }
         let cancel = BnCancellationSignal::new_binder(CancellationSignalService::new(hal_opt));
         Ok(cancel)

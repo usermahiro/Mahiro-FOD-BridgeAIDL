@@ -368,6 +368,25 @@ pub fn trigger_logo_hold() {
     });
 }
 
+static RECENT_SOFOD_TOUCH: Mutex<Option<(std::time::Instant, i32, i32)>> = Mutex::new(None);
+
+pub fn record_sofod_touch(px: i32, py: i32) {
+    let mut lock = RECENT_SOFOD_TOUCH.lock();
+    *lock = Some((std::time::Instant::now(), px, py));
+}
+
+pub fn check_and_consume_recent_sofod_touch() -> Option<(i32, i32)> {
+    let mut lock = RECENT_SOFOD_TOUCH.lock();
+    if let Some((t, px, py)) = *lock {
+        if t.elapsed() < std::time::Duration::from_millis(3000) {
+            *lock = None;
+            return Some((px, py));
+        }
+    }
+    *lock = None;
+    None
+}
+
 static SOFOD_REFIRE_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SOFOD_REFIRE_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -558,6 +577,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                 let mut cur_x: i32 = -1;
                 let mut cur_y: i32 = -1;
                 let mut touch_active = false;
+                let mut is_injected_tid = false;
 
                 let event_size = std::mem::size_of::<InputEvent>();
                 let mut buf = vec![0u8; event_size * 16];
@@ -597,18 +617,27 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         } else if event.code == ABS_MT_POSITION_Y {
                                             cur_y = if event.value > 2436 { event.value / 16 } else { event.value };
                                         } else if event.code == ABS_MT_TRACKING_ID {
-                                            if event.value == -1 {
-                                                cancel_sofod_refire();
-                                                touch_active = false;
-                                                cur_x = -1;
-                                                cur_y = -1;
-                                                if is_down {
-                                                    log_info!("Tracking ID lifted (-1) -> releasing FOD");
-                                                    is_down = false;
-                                                    hal.on_pointer_up();
-                                                    release_wakelock("oplus_udfps_fod_wake");
+                                            if event.value == SOFOD_TID {
+                                                is_injected_tid = true;
+                                                touch_active = true;
+                                            } else if event.value == -1 {
+                                                if is_injected_tid {
+                                                    is_injected_tid = false;
+                                                    crate::log_debug!("Injected tracking ID released (-1), ignoring for real finger state");
+                                                } else {
+                                                    cancel_sofod_refire();
+                                                    touch_active = false;
+                                                    cur_x = -1;
+                                                    cur_y = -1;
+                                                    if is_down {
+                                                        log_info!("Real finger lifted (-1) -> releasing FOD");
+                                                        is_down = false;
+                                                        hal.on_pointer_up();
+                                                        release_wakelock("oplus_udfps_fod_wake");
+                                                    }
                                                 }
                                             } else {
+                                                is_injected_tid = false;
                                                 touch_active = true;
                                             }
                                         }
@@ -624,16 +653,21 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 match target {
                                                     Some((tx, ty)) => {
                                                         if is_inside_fod_area(tx, ty) {
-                                                            trigger_logo_hold();
-                                                            acquire_wakelock("oplus_udfps_fod_wake");
-                                                            log_info!(
-                                                                "SOFOD touch at ({}, {}) (KEY {}, screen_state={}) -> direct HBM & optical capture",
-                                                                tx, ty, event.code, hal.get_screen_state()
-                                                            );
-                                                            is_down = true;
-                                                            last_down_time = std::time::Instant::now();
-                                                            hal.on_pointer_down(tx, ty, 0.0, 0.0);
-                                                            refire_sofod_touch(tx, ty, &path);
+                                                            if hal.get_screen_state() != 1 {
+                                                                record_sofod_touch(tx, ty);
+                                                                trigger_logo_hold();
+                                                                acquire_wakelock("oplus_udfps_fod_wake");
+                                                                log_info!(
+                                                                    "SOFOD touch at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
+                                                                    tx, ty, event.code, hal.get_screen_state()
+                                                                );
+                                                                refire_sofod_touch(tx, ty, &path);
+                                                            } else {
+                                                                acquire_wakelock("oplus_udfps_fod_wake");
+                                                                is_down = true;
+                                                                last_down_time = std::time::Instant::now();
+                                                                hal.on_pointer_down(tx, ty, 0.0, 0.0);
+                                                            }
                                                         } else {
                                                             log_info!(
                                                                 "FOD touch rejected at ({}, {}): outside calibrated FOD area (KEY {})",
@@ -659,16 +693,21 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 };
                                                 if let Some((tx, ty)) = target {
                                                     if is_inside_fod_area(tx, ty) {
-                                                        trigger_logo_hold();
-                                                        acquire_wakelock("oplus_udfps_fod_wake");
-                                                        log_info!(
-                                                            "SOFOD gesture pulse at ({}, {}) (KEY {}, screen_state={}) -> direct HBM & optical capture",
-                                                            tx, ty, event.code, hal.get_screen_state()
-                                                        );
-                                                        is_down = true;
-                                                        last_down_time = std::time::Instant::now();
-                                                        hal.on_pointer_down(tx, ty, 0.0, 0.0);
-                                                        refire_sofod_touch(tx, ty, &path);
+                                                        if hal.get_screen_state() != 1 {
+                                                            record_sofod_touch(tx, ty);
+                                                            trigger_logo_hold();
+                                                            acquire_wakelock("oplus_udfps_fod_wake");
+                                                            log_info!(
+                                                                "SOFOD gesture pulse at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
+                                                                tx, ty, event.code, hal.get_screen_state()
+                                                            );
+                                                            refire_sofod_touch(tx, ty, &path);
+                                                        } else {
+                                                            acquire_wakelock("oplus_udfps_fod_wake");
+                                                            is_down = true;
+                                                            last_down_time = std::time::Instant::now();
+                                                            hal.on_pointer_down(tx, ty, 0.0, 0.0);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -676,15 +715,19 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                             if event.value == 1 {
                                                 touch_active = true;
                                             } else if event.value == 0 {
-                                                cancel_sofod_refire();
-                                                touch_active = false;
-                                                cur_x = -1;
-                                                cur_y = -1;
-                                                if is_down {
-                                                    log_info!("Touch release (BTN_TOUCH 0) detected -> resetting FOD");
-                                                    is_down = false;
-                                                    hal.on_pointer_up();
-                                                    release_wakelock("oplus_udfps_fod_wake");
+                                                if is_injected_tid {
+                                                    crate::log_debug!("Injected BTN_TOUCH 0, ignoring for real finger state");
+                                                } else {
+                                                    cancel_sofod_refire();
+                                                    touch_active = false;
+                                                    cur_x = -1;
+                                                    cur_y = -1;
+                                                    if is_down {
+                                                        log_info!("Touch release (BTN_TOUCH 0) detected -> resetting FOD");
+                                                        is_down = false;
+                                                        hal.on_pointer_up();
+                                                        release_wakelock("oplus_udfps_fod_wake");
+                                                    }
                                                 }
                                             }
                                         }
@@ -693,11 +736,9 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         // Only trigger in deep sleep / doze. When screen is ON (state 1), framework dispatches onPointerDown!
                                         if touch_active && !is_down && hal.get_screen_state() != 1 {
                                             if is_inside_fod_area(cur_x, cur_y) {
+                                                record_sofod_touch(cur_x, cur_y);
                                                 trigger_logo_hold();
-                                                log_info!("SOFOD coordinate via SYN_REPORT at ({}, {}) -> direct HBM & optical capture", cur_x, cur_y);
-                                                is_down = true;
-                                                last_down_time = std::time::Instant::now();
-                                                hal.on_pointer_down(cur_x, cur_y, 0.0, 0.0);
+                                                log_info!("SOFOD coordinate via SYN_REPORT at ({}, {}) -> refiring touch and arming capture", cur_x, cur_y);
                                                 refire_sofod_touch(cur_x, cur_y, &path);
                                             }
                                         }
