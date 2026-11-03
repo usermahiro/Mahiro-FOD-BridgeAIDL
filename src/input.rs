@@ -673,22 +673,23 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
 
                                                  match target {
                                                      Some((tx, ty)) => {
-                                                           if is_inside_fod_area(tx, ty) {
-                                                               let ss = hal.get_screen_state();
-                                                               if ss == 0 {
-                                                                   log_info!(
-                                                                       "SOFOD wake: screen_state=0 (DPMS off) -> triggering wake_display_pipeline before touch",
-                                                                   );
-                                                                   wake_display_pipeline();
-                                                                   std::thread::sleep(std::time::Duration::from_millis(100));
-                                                                   record_sofod_touch(tx, ty);
-                                                                   trigger_logo_hold();
-                                                                   acquire_wakelock("oplus_udfps_fod_wake");
-                                                                   log_info!(
-                                                                       "SOFOD touch at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
-                                                                       tx, ty, event.code, ss
-                                                                   );
-                                                                   refire_sofod_touch(tx, ty, &path);
+                                                            if is_inside_fod_area(tx, ty) {
+                                                                let ss = hal.get_screen_state();
+                                                                if ss == 0 {
+                                                                    log_info!(
+                                                                        "SOFOD wake: screen_state=0 (DPMS off) -> triggering wake_display_pipeline before touch",
+                                                                    );
+                                                                    wake_display_pipeline();
+                                                                    std::thread::sleep(std::time::Duration::from_millis(100));
+                                                                    hal.authenticate(0);
+                                                                    record_sofod_touch(tx, ty);
+                                                                    trigger_logo_hold();
+                                                                    acquire_wakelock("oplus_udfps_fod_wake");
+                                                                    log_info!(
+                                                                        "SOFOD touch at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
+                                                                        tx, ty, event.code, ss
+                                                                    );
+                                                                    refire_sofod_touch(tx, ty, &path);
                                                              } else {
                                                                  acquire_wakelock("oplus_udfps_fod_wake");
                                                                  is_down = true;
@@ -718,24 +719,25 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 } else {
                                                     get_fts_gesture_point()
                                                 };
-                                                if let Some((tx, ty)) = target {
-                                                    if is_inside_fod_area(tx, ty) {
-                                                        let ss = hal.get_screen_state();
-                                                        if ss == 0 {
-                                                            log_info!(
-                                                                "SOFOD gesture wake: screen_state=0 (DPMS off) -> triggering wake_display_pipeline",
-                                                            );
-                                                            wake_display_pipeline();
-                                                            std::thread::sleep(std::time::Duration::from_millis(100));
-                                                        }
-                                                        record_sofod_touch(tx, ty);
-                                                        trigger_logo_hold();
-                                                        acquire_wakelock("oplus_udfps_fod_wake");
-                                                        log_info!(
-                                                            "SOFOD gesture pulse at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
-                                                            tx, ty, event.code, ss
-                                                        );
-                                                        refire_sofod_touch(tx, ty, &path);
+                                                 if let Some((tx, ty)) = target {
+                                                     if is_inside_fod_area(tx, ty) {
+                                                         let ss = hal.get_screen_state();
+                                                         if ss == 0 {
+                                                             log_info!(
+                                                                 "SOFOD gesture wake: screen_state=0 (DPMS off) -> triggering wake_display_pipeline",
+                                                             );
+                                                             wake_display_pipeline();
+                                                             std::thread::sleep(std::time::Duration::from_millis(100));
+                                                             hal.authenticate(0);
+                                                         }
+                                                         record_sofod_touch(tx, ty);
+                                                         trigger_logo_hold();
+                                                         acquire_wakelock("oplus_udfps_fod_wake");
+                                                         log_info!(
+                                                             "SOFOD gesture pulse at ({}, {}) (KEY {}, screen_state={}) -> refiring touch to system and arming capture",
+                                                             tx, ty, event.code, ss
+                                                         );
+                                                         refire_sofod_touch(tx, ty, &path);
                                                      } else {
                                                          acquire_wakelock("oplus_udfps_fod_wake");
                                                          is_down = true;
