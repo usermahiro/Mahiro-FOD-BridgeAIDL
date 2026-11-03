@@ -265,8 +265,9 @@ pub struct FingerprintHal {
     fn_silfp_msg_send: Option<FnSilfpMsgSend>,
     fn_silfp_worker_screen_state: Option<FnSilfpWorkerScreenState>,
     saved_enroll_fid: AtomicI32,
-    step_captured: AtomicBool,
-    pub screen_state: AtomicI32,
+     step_captured: AtomicBool,
+     pub screen_state: AtomicI32,
+     pending_sofod_auth: Mutex<Option<(i32, i64, i64, i64, i32, i64, Vec<u8>)>>,
 }
 
 unsafe impl Send for FingerprintHal {}
@@ -547,6 +548,7 @@ impl FingerprintHal {
             enumerated_ids: Mutex::new(Vec::new()),
             enum_completed: Arc::new(AtomicBool::new(false)),
             remove_pending: Arc::new(AtomicBool::new(false)),
+            pending_sofod_auth: Mutex::new(None),
             fn_silead_cmd,
             fn_goodix_cmd,
             fn_silfp_cust_init,
@@ -587,6 +589,30 @@ impl FingerprintHal {
     pub fn set_callback(&self, cb: Option<Strong<dyn ISessionCallback>>) {
         let mut guard = self.current_callback.lock();
         *guard = cb;
+        // Jika ada SOFOD auth yang pending saat layar OFF, dispatch sekarang
+        // setelah layar terbangun dan session baru dibuat.
+        if let Some(ref cb) = *guard {
+            if let Some((fid, challenge, user_id, auth_id, auth_type, ts_ms, mac)) = self.pending_sofod_auth.lock().take() {
+                log_info!("Dispatching pending SOFOD auth (screen was off during capture)");
+                let hat_for_cb = HardwareAuthToken {
+                    r#challenge: challenge,
+                    r#userId: user_id,
+                    r#authenticatorId: auth_id,
+                    r#authenticatorType: auth_type,
+                    r#timestamp: Timestamp {
+                        r#milliSeconds: ts_ms,
+                    },
+                    r#mac: mac,
+                };
+                let cb_clone = cb.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if let Err(e) = cb_clone.onAuthenticationSucceeded(fid, &hat_for_cb) {
+                        log_warn!("Pending SOFOD auth dispatch failed: {e}");
+                    }
+                });
+            }
+        }
     }
 
     pub fn set_active_user(&self, user_id: i32, store_path: &str) {
@@ -1126,6 +1152,22 @@ impl FingerprintHal {
                     self.is_active.store(false, Ordering::SeqCst);
                     self.send_custom_cmd(10, 0, 0x10001, 0);
                     log_info!("Authentication SUCCEEDED for fid {}", fid);
+                    // Jika layar masih OFF saat auth sukses, simpan HAT untuk dispatch nanti
+                    // saat session baru dibuat setelah layar bangun.
+                    if self.get_screen_state() == 0 && !Self::is_display_dpms_on() {
+                        log_info!("SOFOD auth succeeded while screen OFF -> queuing for deferred dispatch");
+                        *self.pending_sofod_auth.lock() = Some((
+                            fid,
+                            hat.challenge as i64,
+                            hat.userId as i64,
+                            hat.authenticatorId as i64,
+                            hat.authenticatorType as i32,
+                            hat.timestamp.r#milliSeconds,
+                            hat.mac.clone(),
+                        ));
+                        crate::input::wake_display_pipeline();
+                        return;
+                    }
                     let _ = cb.onAuthenticationSucceeded(fid, &hat);
                     if self.get_screen_state() == 0 && !Self::is_display_dpms_on() {
                         log_info!("SOFOD authentication succeeded while display was fully asleep. Waking display pipeline");
