@@ -14,9 +14,17 @@ pub const KEY_GESTURE_38: u16 = 38;    // 0x0026 on FocalTech FT3683G (Gesture I
 pub const KEY_F20: u16 = 190;         // 0x00be on adaptive-ts when gesture is 0xbe (FOD)
 pub const KEY_F13: u16 = 183;         // 0x00b7 on adaptive-ts when gesture is 0xcc (Gesture Click)
 pub const BTN_TOUCH: u16 = 330;
+pub const ABS_MT_SLOT: u16 = 47;
+pub const ABS_MT_TOUCH_MAJOR: u16 = 48;
 pub const ABS_MT_POSITION_X: u16 = 0x35;
 pub const ABS_MT_POSITION_Y: u16 = 0x36;
 pub const ABS_MT_TRACKING_ID: u16 = 0x39;
+pub const SYN_REPORT: u16 = 0;
+
+pub const SOFOD_TID: i32 = 900;
+pub const SOFOD_MAJOR: i32 = 80;
+pub const SOFOD_DELAY_MS: u64 = 200;
+pub const SOFOD_HOLD_MS: u64 = 1000;
 
 // Calibrated Optical FOD Sensor Location & Touch Target for Transsion Camon 30 Pro (1080x2436)
 // Hardware property persist.vendor.fingerprint.optical.sensorlocation: [540::2172], diameter: 228 (radius: 114)
@@ -54,6 +62,24 @@ pub struct InputEvent {
     pub type_: u16,
     pub code: u16,
     pub value: i32,
+}
+
+impl InputEvent {
+    pub fn new(type_: u16, code: u16, value: i32) -> Self {
+        Self {
+            time: libc::timeval { tv_sec: 0, tv_usec: 0 },
+            type_,
+            code,
+            value,
+        }
+    }
+}
+
+pub fn write_input_events(dev: &mut File, events: &[InputEvent]) -> std::io::Result<()> {
+    use std::io::Write;
+    let sz = std::mem::size_of::<InputEvent>() * events.len();
+    let bytes = unsafe { std::slice::from_raw_parts(events.as_ptr() as *const u8, sz) };
+    dev.write_all(bytes)
 }
 
 pub fn acquire_wakelock(name: &str) {
@@ -368,6 +394,170 @@ pub fn try_screen_off_wake_only(
     true
 }
 
+static SOFOD_REFIRE_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SOFOD_REFIRE_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn cancel_sofod_refire() {
+    SOFOD_REFIRE_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn find_touchscreen_device() -> Option<String> {
+    let dir = std::fs::read_dir("/dev/input").ok()?;
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name()?.to_string_lossy();
+        if !file_name.starts_with("event") {
+            continue;
+        }
+
+        if let Ok(file) = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(&path)
+        {
+            let name = get_device_name(file.as_raw_fd());
+            if name == "mtk-tpd" {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+pub struct SofodConfig {
+    pub delay_ms: u64,
+    pub hold_ms: u64,
+    pub major: i32,
+    pub tid: i32,
+}
+
+impl Default for SofodConfig {
+    fn default() -> Self {
+        Self {
+            delay_ms: SOFOD_DELAY_MS,
+            hold_ms: SOFOD_HOLD_MS,
+            major: SOFOD_MAJOR,
+            tid: SOFOD_TID,
+        }
+    }
+}
+
+pub fn load_sofod_config() -> SofodConfig {
+    let mut cfg = SofodConfig::default();
+    if let Ok(content) = std::fs::read_to_string("/data/adb/fod/sofod_touch.conf") {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().trim_matches('"').trim_matches('\'');
+                match k {
+                    "DELAY" => {
+                        if let Ok(sec) = v.parse::<f64>() {
+                            cfg.delay_ms = (sec * 1000.0) as u64;
+                        }
+                    }
+                    "HOLD" => {
+                        if let Ok(sec) = v.parse::<f64>() {
+                            cfg.hold_ms = (sec * 1000.0) as u64;
+                        }
+                    }
+                    "MAJOR" => {
+                        if let Ok(m) = v.parse::<i32>() {
+                            cfg.major = m;
+                        }
+                    }
+                    "TID" => {
+                        if let Ok(t) = v.parse::<i32>() {
+                            cfg.tid = t;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    cfg
+}
+
+pub fn refire_sofod_touch(px: i32, py: i32, default_path: &str) {
+    if SOFOD_REFIRE_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        log_info!("SOFOD refire: already active, skipping duplicate");
+        return;
+    }
+    SOFOD_REFIRE_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let dev_path = find_touchscreen_device().unwrap_or_else(|| default_path.to_string());
+    let px = if px > 0 { px } else { FOD_CENTER_X };
+    let py = if py > 0 { py } else { FOD_CENTER_Y };
+
+    std::thread::Builder::new()
+        .name("sofod_refire".to_string())
+        .spawn(move || {
+            let mut dev = match OpenOptions::new().write(true).open(&dev_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    log_warn!("SOFOD refire: failed to open {} for writing: {e}", dev_path);
+                    SOFOD_REFIRE_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let cfg = load_sofod_config();
+
+            // panel units: 16 per pixel (X max 17279, Y max 38399)
+            let panel_x = (px * 16).min(17279);
+            let panel_y = (py * 16).min(38399);
+
+            std::thread::sleep(std::time::Duration::from_millis(cfg.delay_ms));
+            if SOFOD_REFIRE_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                log_info!("SOFOD refire: cancelled before touch_down");
+                SOFOD_REFIRE_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+
+            log_info!(
+                "SOFOD refire: inject DOWN px=({},{}) panel=({},{}) to {}",
+                px, py, panel_x, panel_y, dev_path
+            );
+
+            let down_events = [
+                InputEvent::new(EV_ABS, ABS_MT_SLOT, 0),
+                InputEvent::new(EV_ABS, ABS_MT_TRACKING_ID, cfg.tid),
+                InputEvent::new(EV_ABS, ABS_MT_POSITION_X, panel_x),
+                InputEvent::new(EV_ABS, ABS_MT_POSITION_Y, panel_y),
+                InputEvent::new(EV_ABS, ABS_MT_TOUCH_MAJOR, cfg.major),
+                InputEvent::new(EV_KEY, BTN_TOUCH, 1),
+                InputEvent::new(EV_SYN, SYN_REPORT, 0),
+            ];
+            let _ = write_input_events(&mut dev, &down_events);
+
+            let start = std::time::Instant::now();
+            let hold_dur = std::time::Duration::from_millis(cfg.hold_ms);
+            while start.elapsed() < hold_dur {
+                if SOFOD_REFIRE_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                    log_info!("SOFOD refire: finger lifted early, ending hold");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            log_info!("SOFOD refire: inject UP to {}", dev_path);
+            let up_events = [
+                InputEvent::new(EV_ABS, ABS_MT_SLOT, 0),
+                InputEvent::new(EV_ABS, ABS_MT_TRACKING_ID, -1),
+                InputEvent::new(EV_KEY, BTN_TOUCH, 0),
+                InputEvent::new(EV_SYN, SYN_REPORT, 0),
+            ];
+            let _ = write_input_events(&mut dev, &up_events);
+
+            SOFOD_REFIRE_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("failed to spawn sofod_refire thread");
+}
+
 pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
     ensure_gesture_fod_enabled();
 
@@ -436,6 +626,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                             cur_y = if event.value > 2436 { event.value / 16 } else { event.value };
                                         } else if event.code == ABS_MT_TRACKING_ID {
                                             if event.value == -1 {
+                                                cancel_sofod_refire();
                                                 touch_active = false;
                                                 wake_fired = false;
                                                 pending_capture = None;
@@ -525,6 +716,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                             if event.value == 1 {
                                                 touch_active = true;
                                             } else if event.value == 0 {
+                                                cancel_sofod_refire();
                                                 touch_active = false;
                                                 wake_fired = false;
                                                 pending_capture = None;
@@ -602,6 +794,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                             is_down = true;
                             last_down_time = std::time::Instant::now();
                             hal.on_pointer_down(px, py, 0.0, 0.0);
+                            refire_sofod_touch(px, py, &path);
                         }
                     }
 
