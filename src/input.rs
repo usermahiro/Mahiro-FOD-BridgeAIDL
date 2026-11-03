@@ -681,7 +681,6 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                                     );
                                                                     wake_display_pipeline();
                                                                     std::thread::sleep(std::time::Duration::from_millis(100));
-                                                                    hal.authenticate(0);
                                                                     record_sofod_touch(tx, ty);
                                                                     trigger_logo_hold();
                                                                     acquire_wakelock("oplus_udfps_fod_wake");
@@ -728,7 +727,6 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                              );
                                                              wake_display_pipeline();
                                                              std::thread::sleep(std::time::Duration::from_millis(100));
-                                                             hal.authenticate(0);
                                                          }
                                                          record_sofod_touch(tx, ty);
                                                          trigger_logo_hold();
