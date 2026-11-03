@@ -984,10 +984,6 @@ impl FingerprintHal {
         let screen_state = self.get_screen_state();
 
         if !self.is_active() {
-            if screen_state == 1 {
-                log_debug!("on_pointer_down while inactive and screen is ON -> ignored");
-                return;
-            }
             log_info!("on_pointer_down while inactive (screen_state={}) -> auto-starting authenticate for SOFOD", screen_state);
             self.authenticate(0);
         }
