@@ -646,6 +646,11 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         } else if event.code == ABS_MT_POSITION_Y {
                                             cur_y = if event.value > 2436 { event.value / 16 } else { event.value };
                                         } else if event.code == ABS_MT_TRACKING_ID {
+                                            // Saat layar ON (state=1), biarkan sentuhan alami lewat ke sistem
+                                            // agar on_pointer_down di HAL bisa memicu fingerprint UI.
+                                            if hal.get_screen_state() == 1 {
+                                                continue;
+                                            }
                                             if event.value == SOFOD_TID {
                                                 is_injected_tid = true;
                                                 touch_active = true;
